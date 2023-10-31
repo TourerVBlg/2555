@@ -1,0 +1,174 @@
+#include <iostream>
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <mysql_driver.h>
+#include <mysql_connection.h>
+#include <cppconn/statement.h>
+#include <cppconn/prepared_statement.h>
+
+// Шаблонная функция для получения ввода от пользователя с обработкой исключений
+template <typename T>
+T getInput(const std::string& prompt) {
+    std::cout << prompt;
+    T input;
+    std::cin >> input;
+    while (std::cin.fail()) {
+        std::cout << "Некорректный ввод. Пожалуйста, попробуйте еще раз." << std::endl;
+        std::cin.clear();
+        std::cin.ignore(10000, '\n');
+        std::cout << prompt;
+        std::cin >> input;
+    }
+    return input;
+}
+
+class User {
+private:
+    std::string username;
+    std::string password;
+
+public:
+    User(const std::string& username, const std::string& password) : username(username), password(password) {}
+
+    std::string getUsername() const {
+        return username;
+    }
+
+    std::string getPassword() const {
+        return password;
+    }
+};
+
+class Chat {
+private:
+    std::vector<User> users;
+    sql::mysql::MySQL_Driver* driver;
+    sql::Connection* con;
+
+public:
+    Chat() {
+        driver = sql::mysql::get_mysql_driver_instance();
+        con = driver->connect("tcp://127.0.0.1:3306", "root", "password");
+    }
+
+    ~Chat() {
+        delete con;
+    }
+
+    void addUser(const User& user) {
+        users.push_back(user);
+    }
+
+    bool authenticateUser(const std::string& username, const std::string& password) {
+        sql::Statement* stmt = con->createStatement();
+        sql::ResultSet* res = stmt->executeQuery("SELECT * FROM users WHERE username='" + username + "' AND password='" + password + "'");
+        bool authenticated = res->next();
+        delete res;
+        delete stmt;
+        return authenticated;
+    }
+
+    void registerUser(const std::string& username, const std::string& password) {
+        sql::PreparedStatement* stmt = con->prepareStatement("INSERT INTO users (username, password) VALUES (?, ?)");
+        stmt->setString(1, username);
+        stmt->setString(2, password);
+        stmt->execute();
+        delete stmt;
+        std::cout << "Пользователь " << username << " успешно зарегистрирован." << std::endl;
+    }
+
+    void sendMessage(const std::string& sender, const std::string& recipient, const std::string& message) {
+        sql::PreparedStatement* stmt = con->prepareStatement("INSERT INTO messages (sender, recipient, message) VALUES (?, ?, ?)");
+        stmt->setString(1, sender);
+        stmt->setString(2, recipient);
+        stmt->setString(3, message);
+        stmt->execute();
+        delete stmt;
+    }
+
+    void printMessages(const std::string& recipient) {
+        sql::Statement* stmt = con->createStatement();
+        sql::ResultSet* res = stmt->executeQuery("SELECT * FROM messages WHERE recipient='" + recipient + "'");
+        std::cout << "Сообщения для " << recipient << ":" << std::endl;
+        while (res->next()) {
+            std::cout << res->getString("sender") << ": " << res->getString("message") << std::endl;
+        }
+        delete res;
+        delete stmt;
+        std::cout << std::endl;
+    }
+
+    void broadcastMessage(const std::string& sender, const std::string& message) {
+        sql::Statement* stmt = con->createStatement();
+        sql::ResultSet* res = stmt->executeQuery("SELECT username FROM users WHERE username<>'" + sender + "'");
+        while (res->next()) {
+            std::string recipient = res->getString("username");
+            sendMessage(sender, recipient, message);
+        }
+        delete res;
+        delete stmt;
+    }
+};
+
+int main() {
+    setlocale(LC_ALL, "Russian");
+    Chat chat;
+    std::string username;
+    std::string password;
+
+    while (true) { // цикл для регистрации новых пользователей или входа в систему
+        char choice = getInput<char>("Введите 'r', чтобы зарегистрировать нового пользователя, или 'l', чтобы войти в систему: ");
+        try {
+            if (choice == 'r') { // если пользователь выбрал 'r', то регистрируем нового пользователя
+                std::string username = getInput<std::string>("Введите новое имя пользователя: ");
+                std::string password = getInput<std::string>("Введите новый пароль: ");
+                chat.registerUser(username, password);
+            }
+            else if (choice == 'l') { // если пользователь выбрал 'l', то запрашиваем данные для входа в систему
+                while (true) {
+                    std::string username = getInput<std::string>("Введите имя пользователя: ");
+                    std::string password = getInput<std::string>("Введите пароль: ");
+                    if (chat.authenticateUser(username, password)) { // если данные для входа правильные, то выходим из цикла
+                        break;
+                    }
+                    else {
+                        std::cout << "Неверное имя пользователя или пароль. Попробуйте еще раз." << std::endl; // иначе сообщаем об ошибке
+                    }
+                }
+                std::cout << "Вы вошли в систему как " << username << "." << std::endl; // сообщаем о успешном входе
+
+                while (true) { // основной цикл чата
+                    char choice = getInput<char>("Введите 's', чтобы отправить сообщение, 'p', чтобы показать свои сообщения, или 'b', чтобы отправить сообщение всем: ");
+
+                    try {
+                        if (choice == 's') { // если пользователь выбрал 's', то запрашиваем получателя и сообщение
+                            std::string recipient = getInput<std::string>("Введите имя получателя: ");
+                            std::string message = getInput<std::string>("Введите ваше сообщение: ");
+                            chat.sendMessage(username, recipient, message); // отправляем сообщение
+                            std::cout << "Сообщение отправлено " << recipient << "." << std::endl;
+                        }
+                        else if (choice == 'p') { // если пользователь выбрал 'p', то показываем все его сообщения
+                            chat.printMessages(username);
+                        }
+                        else if (choice == 'b') { // если пользователь выбрал 'b', то запрашиваем сообщение и отправляем его всем пользователям
+                            std::string message = getInput<std::string>("Введите сообщение для всех: ");
+                            chat.broadcastMessage(username, message);
+                            std::cout << "Сообщение отправлено всем пользователям." << std::endl;
+                        }
+                    }
+                    catch (const std::exception& e) { // обрабатываем исключение при попытке доступа к сообщениям несуществующего пользователя
+                        std::cerr << "Ошибка: " << e.what() << std::endl;
+                    }
+                }
+
+                return 0;
+            }
+        }
+        catch (const std::exception& e) { // обрабатываем любые другие исключения
+            std::cerr << "Ошибка: " << e.what() << std::endl;
+        }
+    }
+
+    return 0;
+}
